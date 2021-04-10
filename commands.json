@@ -1,0 +1,11 @@
+{
+  "name": "sever-ops",
+  "description": "Interact with the minecraft server",
+  "options": [
+    {
+      "name": "status",
+      "description": "get server status",
+      "type": 1
+    }
+  ]
+}
