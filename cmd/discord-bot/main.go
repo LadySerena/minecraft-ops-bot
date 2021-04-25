@@ -1,15 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
-	"github.com/bwmarrin/discordgo"
+	"log"
+	"net/http"
+
+	"github.com/bsdlp/discord-interactions-go/interactions"
 	"github.com/gorilla/mux"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
-	"io/ioutil"
-	"log"
-	"net/http"
 )
 
 const (
@@ -24,84 +25,54 @@ var (
 	bindAddress = serverBindDefault
 )
 
-type discordPing struct {
-	MessageType int `json:"type"`
-}
-
-type InteractionResponse struct {
-	ResponseType int          `json:"type"`
-	Data         CallbackData `json:"data"`
-}
-
-type CallbackData struct {
-	TextToSpeech    bool                             `json:"tts"`
-	Content         string                           `json:"content"`
-	Embeds          []discordgo.MessageEmbed         `json:"embeds"`
-	AllowedMentions discordgo.MessageAllowedMentions `json:"allowed_mentions,omitempty"`
-	Flags           int                              `json:"flags,omitempty"`
-}
-
 func ping(w http.ResponseWriter, r *http.Request) {
 	zap.S().Debug("got request")
-	if !discordgo.VerifyInteraction(r, publicKey) {
+	verified := interactions.Verify(r, publicKey)
+	if !verified {
 		zap.S().Error("could not verify request")
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 	defer r.Body.Close()
-	body, readErr := ioutil.ReadAll(r.Body)
-	if readErr != nil {
-		zap.S().Errorf("could not read the request body: %v", readErr)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	parsedBody := discordPing{}
+	var data interactions.Data
 
-	unmarshalErr := json.Unmarshal(body, &parsedBody)
+	decodeErr := json.NewDecoder(r.Body).Decode(&data)
 
-	if unmarshalErr != nil {
-		zap.S().Errorf("could not unmarshal the response")
+	if decodeErr != nil {
+		zap.S().Errorf("could not decode the request: %s", decodeErr.Error())
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	if parsedBody.MessageType == 1 {
+	if data.Type == interactions.Ping {
 		zap.S().Debug("responding to ping")
 		w.WriteHeader(http.StatusOK)
-		w.Write(body) // return the body since we are supposed to reply with {"type": 1}
-		return
-	} else {
-		zap.S().Debug("processing real request")
-		w.WriteHeader(http.StatusOK)
-		response := InteractionResponse{
-			ResponseType: 4,
-			Data: CallbackData{
-				TextToSpeech: false,
-				Content:      "meow",
-				Embeds:       make([]discordgo.MessageEmbed, 0),
-				AllowedMentions: discordgo.MessageAllowedMentions{
-					Parse: make([]discordgo.AllowedMentionType, 0),
-				},
-				Flags: 0,
-			},
-		}
-		data, marshalErr := json.Marshal(response)
-
-		if marshalErr != nil {
-			zap.S().Errorf("could not marshal response: %v", marshalErr)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		zap.S().Debugf("struct: %#v", response)
-		zap.S().Debugf("json: %s", string(data))
-		_, writeErr := w.Write(data)
-		if writeErr != nil {
-			zap.S().Errorf("failed to write reply: %v", writeErr)
-		}
+		w.Write([]byte(`{"type":1}`)) // return the body since we are supposed to reply with {"type": 1}
 		return
 	}
 
-	w.WriteHeader(http.StatusBadRequest)
+	zap.S().Debug("processing real request")
+	w.WriteHeader(http.StatusOK)
+	response := &interactions.InteractionResponse{
+		Type: interactions.ChannelMessage,
+		Data: &interactions.InteractionApplicationCommandCallbackData{
+			Content: "meow",
+		},
+	}
+
+	var responseBuffer bytes.Buffer
+	encodeErr := json.NewEncoder(&responseBuffer).Encode(response)
+	if encodeErr != nil {
+		zap.S().Errorf("could not encode response: %s", encodeErr.Error())
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	_, postErr := http.Post(data.ResponseURL(), "application/json", &responseBuffer)
+	if postErr != nil {
+		zap.S().Errorf("could not post data to url: %s", postErr.Error())
+	}
+	
 }
 
 func main() {
